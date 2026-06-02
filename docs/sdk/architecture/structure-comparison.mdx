@@ -1,0 +1,116 @@
+---
+title: "Structure Comparison"
+sidebarTitle: "Structure Comparison"
+description: "A comparison of the ActAgent SDK architecture against the public jzhng105/claude-code structure, with focused improvement opportunities."
+---
+
+This note compares ActAgent's current SDK/CLI structure with the public `jzhng105/claude-code` repository overview. It is intentionally limited to high-level repository organization and architectural patterns, not copied implementation details.
+
+## Source Reviewed
+
+- External reference: [`jzhng105/claude-code`](https://github.com/jzhng105/claude-code), reviewed as a public architecture/structure reference.
+- Local baseline: the ActAgent SDK workspace under `sdk/`, especially `packages/*`, `apps/cli`, and the public SDK architecture docs.
+
+## What ActAgent Already Does Well
+
+ActAgent already has a cleaner package boundary than the single large `src/` shape described in the external reference:
+
+| Concern | ActAgent location | Why this is strong |
+| --- | --- | --- |
+| Shared contracts and utilities | `sdk/packages/shared` | Keeps schemas, hook contracts, prompt helpers, storage contracts, RPC contracts, and team/session types reusable. |
+| Model/provider routing | `sdk/packages/llms` | Separates provider manifests, model catalogs, and provider option routing from runtime orchestration. |
+| Stateless agent loop | `sdk/packages/agents` | Keeps turn execution and tool orchestration free of host/session persistence concerns. |
+| Stateful orchestration | `sdk/packages/core` | Owns sessions, hub runtime, plugins, hooks, storage, telemetry, settings, auth, and automation. |
+| CLI/TUI host | `sdk/apps/cli` | Keeps command parsing, interactive UI, connectors, and host-specific UX outside the SDK core. |
+
+This layered split is a good foundation for a production SDK: the package graph documents ownership, enables focused publishing, and avoids turning the CLI entrypoint into the system's architectural center.
+
+## Improvement Opportunities Inspired by the Reference Structure
+
+### 1. Add a first-class command registry map
+
+The external reference makes slash/user command inventory easy to discover by centralizing command registration and documenting the command system as its own architectural pillar. ActAgent currently has well-separated CLI command modules under `sdk/apps/cli/src/commands`, plus chat/TUI command helpers under `sdk/apps/cli/src/tui/commands` and `sdk/apps/cli/src/utils/*command*`, but no single documented command registry index.
+
+Recommended improvement:
+
+- Create a lightweight command registry reference that lists CLI commands, interactive chat commands, owning files, aliases, and whether each command requires hub/session state.
+- Keep implementation modular; do not collapse command modules into one large file.
+- Add a generated or test-checked snapshot so command documentation cannot drift.
+
+Expected benefit: easier onboarding, cleaner plugin command integration, and simpler parity checks across CLI, TUI, and connector surfaces.
+
+### 2. Promote tool discovery to a documented runtime contract
+
+The external reference treats tools as a top-level system with schemas, permission behavior, and execution ownership. ActAgent already has strong tool abstractions across `@cline/agents`, `@cline/core`, `@cline/shared`, and plugin support, but the docs can make the runtime ownership path more explicit.
+
+Recommended improvement:
+
+- Add a tool inventory page that distinguishes built-in tools, plugin tools, MCP tools, connector capabilities, and host-brokered capabilities.
+- Document the permission path from tool proposal to approval to execution, including what runs in the agent loop versus what is brokered by a client.
+- Add a small compatibility matrix for local, hub, and remote backend modes.
+
+Expected benefit: clearer extension author expectations and fewer accidental boundary violations between agents, core, and host applications.
+
+### 3. Split the CLI startup path into documented phases
+
+The external reference highlights startup optimization through parallel prefetching and lazy loading. ActAgent already has runtime bootstrap code, hub discovery, telemetry gates, and CLI/TUI startup paths, but these phases are not as visible in the public architecture docs.
+
+Recommended improvement:
+
+- Document startup phases: argument parsing, auth/provider readiness, settings load, hub discovery/start, session restore, runtime creation, UI mount, and first turn dispatch.
+- Mark which phases must stay lazy or parallelizable.
+- Add perf-oriented tests or smoke traces for startup regressions once the phases are stable.
+
+Expected benefit: faster CLI iteration, safer boot-path refactors, and less accidental eager importing of expensive subsystems.
+
+### 4. Make bridge/capability brokerage a named subsystem
+
+The external reference has an explicit bridge layer for IDE/remote-control communication. ActAgent has a stronger hub-spoke model, but the architecture can benefit from naming the cross-client capability brokerage layer separately from generic hub transport.
+
+Recommended improvement:
+
+- Introduce docs language for a "capability bridge" that covers file opening, diff display, shell execution, approvals, notifications, and other client-advertised capabilities.
+- Keep implementation in the hub/client boundaries, but name the subsystem so future VS Code, JetBrains, CLI, and connector work can converge on one vocabulary.
+- Add examples showing a session that starts in the CLI and later gains IDE capabilities.
+
+Expected benefit: better multi-client UX planning and clearer separation between session persistence and client-specific affordances.
+
+### 5. Treat memory, tasks, and schedules as one automation plane
+
+The external reference exposes memory, tasks, scheduled triggers, and team coordination as discoverable top-level features. ActAgent already has scheduled agents, hooks, teams, connectors, session artifacts, and shared automation types, but these are documented across several pages.
+
+Recommended improvement:
+
+- Add an "automation plane" architecture page that ties together schedules, hooks, teams, connectors, session artifacts, and persistent memory/config.
+- Show how scheduled agents and connector-triggered agents enter the same runtime path.
+- Clarify which data is durable session state versus derived UI/task state.
+
+Expected benefit: lower cognitive load for developers adding new triggers and fewer duplicated orchestration paths.
+
+### 6. Add architecture decision records for boundary-sensitive changes
+
+ActAgent's package boundaries are already better than a large single-package CLI, so the main risk is gradual erosion. The external structure is useful as a checklist of systems, but ActAgent should preserve its stronger decomposition.
+
+Recommended improvement:
+
+- Add lightweight ADRs for changes that move logic across `shared`, `llms`, `agents`, `core`, and app packages.
+- Start with decisions for provider routing, hub capability brokerage, tool permission handling, and automation triggers.
+- Link ADRs from `sdk/ARCHITECTURE.md` and from relevant docs pages.
+
+Expected benefit: future contributors can understand why boundaries exist before adding compatibility shims or duplicating host logic.
+
+## Suggested Priority Order
+
+1. Command registry reference and drift test.
+2. Tool inventory/permission matrix.
+3. CLI startup phase documentation and perf guardrails.
+4. Capability bridge terminology and examples.
+5. Automation plane docs.
+6. ADR directory for boundary-sensitive decisions.
+
+## Non-Goals
+
+- Do not mirror the external repository's large single-`src/` organization.
+- Do not copy implementation details from the external repository.
+- Do not move host-specific CLI/TUI behavior into `@cline/core` unless it is genuinely shared host runtime behavior.
+- Do not replace ActAgent's hub-spoke architecture with a CLI-centered bridge model; instead, document bridge/capability brokerage as a named part of hub-spoke.
