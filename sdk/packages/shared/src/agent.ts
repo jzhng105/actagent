@@ -151,6 +151,21 @@ export interface AgentToolDefinition {
 		 */
 		completesRun?: boolean;
 	};
+	/**
+	 * When true, this tool's full schema is withheld from the model's initial
+	 * tool list and only loaded on demand via the deferred-tool search tool.
+	 *
+	 * Deferring rarely-used or numerous tools (e.g. large MCP catalogs) keeps the
+	 * per-turn tool payload small, which lowers token cost and improves
+	 * time-to-first-token. The tool stays fully executable once activated.
+	 */
+	defer?: boolean;
+	/**
+	 * Extra keywords matched against the deferred-tool search query, in addition
+	 * to the tool name and description. Use to surface a tool for terms that do
+	 * not literally appear in its name/description.
+	 */
+	searchHint?: string;
 }
 
 export interface AgentToolResult<TOutput = unknown> {
@@ -431,6 +446,26 @@ export interface AgentRuntimeConfig {
 	toolExecution?: "sequential" | "parallel";
 	toolPolicies?: Record<string, ToolPolicy>;
 	toolContextMetadata?: Record<string, unknown>;
+	/**
+	 * Controls on-demand ("deferred") tool loading. Tools flagged with
+	 * `defer: true` are hidden from the model's initial tool list and surfaced
+	 * through a synthetic search tool the model can call to load them when
+	 * relevant. This keeps the per-turn tool payload small for large catalogs.
+	 */
+	deferredTools?: {
+		/**
+		 * Defaults to true. When false, deferred tools are always sent in full and
+		 * the search tool is never injected (the `defer` flag is ignored).
+		 */
+		enabled?: boolean;
+		/** Name of the injected search tool. Defaults to `search_tools`. */
+		searchToolName?: string;
+		/**
+		 * Maximum number of tools a single search call may activate. Defaults to
+		 * 10. Prevents an overly broad query from loading an entire catalog.
+		 */
+		maxActivationsPerSearch?: number;
+	};
 	requestToolApproval?: (
 		request: ToolApprovalRequest,
 	) => Promise<ToolApprovalResult> | ToolApprovalResult;
