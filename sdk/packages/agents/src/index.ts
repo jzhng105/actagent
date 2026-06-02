@@ -54,3 +54,14 @@ export {
 	createAgent,
 	createAgentRuntime,
 } from "./agent-runtime";
+export type {
+	DeferredToolCandidate,
+	DeferredToolMatch,
+} from "./deferred-tools";
+export {
+	DEFAULT_MAX_ACTIVATIONS_PER_SEARCH,
+	DEFAULT_SEARCH_TOOL_NAME,
+	describeDeferredTool,
+	rankDeferredTools,
+	tokenize,
+} from "./deferred-tools";

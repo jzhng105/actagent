@@ -25,6 +25,12 @@ import type {
 } from "@cline/shared";
 import { captureSdkError, estimateTokens } from "@cline/shared";
 import { nanoid } from "nanoid";
+import {
+	DEFAULT_MAX_ACTIVATIONS_PER_SEARCH,
+	DEFAULT_SEARCH_TOOL_NAME,
+	describeDeferredTool,
+	rankDeferredTools,
+} from "./deferred-tools";
 
 // Local `createUID` helper. The clinee source imports this from
 // `@cline/shared` (see `packages/shared/dist/identifier.ts`), but
@@ -342,6 +348,9 @@ export class AgentRuntime {
 	private readonly listeners = new Set<AgentEventListener>();
 	// biome-ignore lint/suspicious/noExplicitAny: tool input/output types vary per tool
 	private readonly tools = new Map<string, AgentTool<any, any>>();
+	// Names of deferred tools the model has loaded via the search tool this run.
+	// Once activated, a tool is included in the model's tool list like any other.
+	private readonly activatedDeferredTools = new Set<string>();
 	private hooks: HookBag = {
 		beforeRun: [],
 		afterRun: [],
@@ -472,6 +481,224 @@ export class AgentRuntime {
 			}
 			this.registerHooks(setup?.hooks);
 		}
+		this.registerDeferredToolSearch();
+	}
+
+	/**
+	 * Register the synthetic search tool once, if deferred tools are present and
+	 * the feature is enabled. The tool is always registered (so it stays
+	 * executable), but {@link buildModelToolDefinitions} only advertises it to
+	 * the model while unactivated deferred tools remain.
+	 */
+	private registerDeferredToolSearch(): void {
+		if (!this.deferredToolsEnabled() || !this.hasDeferredTools()) {
+			return;
+		}
+		const searchToolName = this.deferredToolSearchName();
+		if (this.tools.has(searchToolName)) {
+			this.config.logger?.log(
+				`Deferred tool search disabled: a tool named "${searchToolName}" already exists. ` +
+					"Set deferredTools.searchToolName to a free name to enable on-demand loading.",
+				{ severity: "warn" },
+			);
+			return;
+		}
+		this.tools.set(
+			searchToolName,
+			this.createDeferredSearchTool(searchToolName),
+		);
+	}
+
+	private deferredToolsEnabled(): boolean {
+		return this.config.deferredTools?.enabled !== false;
+	}
+
+	private deferredToolSearchName(): string {
+		return (
+			this.config.deferredTools?.searchToolName?.trim() ||
+			DEFAULT_SEARCH_TOOL_NAME
+		);
+	}
+
+	private deferredMaxActivations(): number {
+		const configured = this.config.deferredTools?.maxActivationsPerSearch;
+		return typeof configured === "number" && configured > 0
+			? Math.floor(configured)
+			: DEFAULT_MAX_ACTIVATIONS_PER_SEARCH;
+	}
+
+	private hasDeferredTools(): boolean {
+		for (const tool of this.tools.values()) {
+			if (tool.defer === true) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Deferred tools the model has not yet loaded via the search tool. */
+	private getHiddenDeferredTools(): AgentTool[] {
+		const searchToolName = this.deferredToolSearchName();
+		const hidden: AgentTool[] = [];
+		for (const tool of this.tools.values()) {
+			if (tool.name === searchToolName) {
+				continue;
+			}
+			if (tool.defer === true && !this.activatedDeferredTools.has(tool.name)) {
+				hidden.push(tool);
+			}
+		}
+		return hidden;
+	}
+
+	/**
+	 * Build the tool list sent to the model for a turn. Non-deferred tools are
+	 * always included; deferred tools appear only once activated; the search tool
+	 * is advertised only while hidden deferred tools remain. Only the public
+	 * `{name, description, inputSchema}` shape is emitted so providers never see
+	 * internal flags like `defer`.
+	 */
+	private buildModelToolDefinitions(): AgentToolDefinition[] {
+		const deferEnabled = this.deferredToolsEnabled();
+		const searchToolName = this.deferredToolSearchName();
+		const definitions: AgentToolDefinition[] = [];
+
+		for (const tool of this.tools.values()) {
+			if (tool.name === searchToolName) {
+				// Re-added below with a dynamic description (only when needed).
+				continue;
+			}
+			if (
+				deferEnabled &&
+				tool.defer === true &&
+				!this.activatedDeferredTools.has(tool.name)
+			) {
+				continue;
+			}
+			definitions.push({
+				name: tool.name,
+				description: tool.description,
+				inputSchema: tool.inputSchema,
+			});
+		}
+
+		if (deferEnabled) {
+			const hidden = this.getHiddenDeferredTools();
+			if (hidden.length > 0) {
+				definitions.push(
+					this.buildSearchToolDefinition(searchToolName, hidden),
+				);
+			}
+		}
+
+		return definitions;
+	}
+
+	private buildSearchToolDefinition(
+		searchToolName: string,
+		hidden: readonly AgentTool[],
+	): AgentToolDefinition {
+		const catalog = hidden.map(describeDeferredTool).join("\n");
+		return {
+			name: searchToolName,
+			description:
+				"Load additional tools that are not yet available in this conversation. " +
+				"Call this with a query describing the capability you need; matching tools " +
+				"become callable on the next step. Tools available to load:\n" +
+				catalog,
+			inputSchema: {
+				type: "object",
+				properties: {
+					query: {
+						type: "string",
+						description:
+							"Keywords describing the capability or tool you need to load.",
+					},
+				},
+				required: ["query"],
+				additionalProperties: false,
+			},
+		};
+	}
+
+	private createDeferredSearchTool(searchToolName: string): AgentTool {
+		return {
+			name: searchToolName,
+			description:
+				"Load additional tools by searching for a capability. " +
+				"Pass a query describing what you need.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					query: { type: "string" },
+				},
+				required: ["query"],
+				additionalProperties: false,
+			},
+			execute: (input: unknown) => {
+				const query =
+					input &&
+					typeof input === "object" &&
+					typeof (input as { query?: unknown }).query === "string"
+						? (input as { query: string }).query
+						: "";
+				return this.activateDeferredToolsByQuery(query);
+			},
+		};
+	}
+
+	/**
+	 * Resolve a search query against hidden deferred tools, activate the matches,
+	 * and return a result describing what is now callable. On no match, returns
+	 * the remaining catalog so the model can refine its query.
+	 */
+	private activateDeferredToolsByQuery(query: string): {
+		query: string;
+		activated: Array<{ name: string; description: string }>;
+		available?: Array<{ name: string; description: string }>;
+		message: string;
+	} {
+		const hidden = this.getHiddenDeferredTools();
+		if (hidden.length === 0) {
+			return {
+				query,
+				activated: [],
+				message: "All available tools are already loaded.",
+			};
+		}
+
+		const matches = rankDeferredTools(
+			hidden,
+			query,
+			this.deferredMaxActivations(),
+		);
+
+		if (matches.length === 0) {
+			return {
+				query,
+				activated: [],
+				available: hidden.map((tool) => ({
+					name: tool.name,
+					description: tool.description,
+				})),
+				message:
+					"No tools matched that query. Pick one of the available tools by name " +
+					"and search again, or refine your keywords.",
+			};
+		}
+
+		const activated = matches.map(({ tool }) => {
+			this.activatedDeferredTools.add(tool.name);
+			return { name: tool.name, description: tool.description };
+		});
+
+		return {
+			query,
+			activated,
+			message: `Loaded ${activated.length} tool(s): ${activated
+				.map((tool) => tool.name)
+				.join(", ")}. They are now available to call.`,
+		};
 	}
 
 	private registerHooks(hooks: Partial<AgentRuntimeHooks> | undefined): void {
@@ -729,11 +956,7 @@ export class AgentRuntime {
 		let request: AgentModelRequest = {
 			systemPrompt: this.config.systemPrompt,
 			messages: cloneMessages(this.state.messages),
-			tools: [...this.tools.values()].map<AgentToolDefinition>((tool) => ({
-				name: tool.name,
-				description: tool.description,
-				inputSchema: tool.inputSchema,
-			})),
+			tools: this.buildModelToolDefinitions(),
 			signal: this.abortController?.signal,
 			options: this.config.modelOptions,
 		};
