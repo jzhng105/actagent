@@ -70,3 +70,6 @@ tests/**/cache
 *.db-wal
 .cline/**/managed.json
 .cline/**/bundle.json
+
+# trace-recorder trace directories (sensitive; best-effort redaction only)
+.traces/

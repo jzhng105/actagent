@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trace-recorder"
+version = "0.2.0"
+description = "Agent-agnostic tool-call trace recorder: passive infrastructure producing the workflow-compilation IR (.traces JSONL)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+# The write path is stdlib-plus-nothing by design; keep it that way.
+dependencies = []
+
+[project.optional-dependencies]
+yaml = ["pyyaml>=6"]
+dev = ["pytest>=8", "pyyaml>=6"]
+
+[project.scripts]
+trace-recorder = "trace_recorder.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["trace_recorder*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

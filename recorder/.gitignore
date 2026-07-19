@@ -1,0 +1,7 @@
+# The trace directory is sensitive (best-effort redaction only) — never commit it.
+.traces/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+dist/
+build/
